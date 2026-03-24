@@ -80,18 +80,55 @@ async function captureScreenshot(label) {
   log(`Screenshot saved: ${filepath} (${pngBuffer.length} bytes)`);
 }
 
-function spawnPty(cols, rows) {
-  // Non-interactive login shell — sources .zprofile/.zshrc for nvm PATH,
-  // then exec's bluedoor directly. No prompt ever appears.
-  log(`Spawning PTY: /bin/zsh -lc bluedoor (${cols}x${rows})`);
+function findPaths() {
+  const home = os.homedir();
+  let nodePath = 'node';
+  let bluedoorPath = 'bluedoor';
 
-  ptyProcess = pty.spawn('/bin/zsh', ['-lc', 'exec bluedoor'], {
+  // Find nvm node + bluedoor
+  try {
+    const nvmDir = path.join(home, '.nvm/versions/node');
+    const versions = fs.readdirSync(nvmDir).sort();
+    if (versions.length) {
+      const binDir = path.join(nvmDir, versions[versions.length - 1], 'bin');
+      const n = path.join(binDir, 'node');
+      const b = path.join(binDir, 'bluedoor');
+      if (fs.existsSync(n)) nodePath = n;
+      if (fs.existsSync(b)) bluedoorPath = b;
+    }
+  } catch {}
+
+  // Fallback locations for bluedoor
+  if (bluedoorPath === 'bluedoor') {
+    for (const p of ['/opt/homebrew/bin/bluedoor', '/usr/local/bin/bluedoor']) {
+      if (fs.existsSync(p)) { bluedoorPath = p; break; }
+    }
+  }
+
+  return { nodePath, bluedoorPath };
+}
+
+function spawnPty(cols, rows) {
+  // Use the same spawn that worked in dev mode, but inject nvm into PATH
+  // so it also works from packaged .app bundles.
+  const home = os.homedir();
+  const { nodePath } = findPaths();
+  const nvmBin = path.dirname(nodePath);
+  const currentPATH = process.env.PATH || '/usr/bin:/bin';
+  const fullPATH = currentPATH.includes(nvmBin) ? currentPATH : `${nvmBin}:${currentPATH}`;
+
+  log(`Spawning /bin/zsh -c bluedoor, PATH includes nvm: ${nvmBin}`);
+
+  // Don't use -l (login shell) — it sources .zprofile which resets PATH,
+  // clobbering the nvm path we inject. Just use -c with our explicit PATH.
+  ptyProcess = pty.spawn('/bin/zsh', ['-c', 'exec bluedoor'], {
     name: 'xterm-256color',
     cols: cols || 80,
     rows: rows || 24,
     cwd: os.homedir(),
     env: {
       ...process.env,
+      PATH: fullPATH,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       BLUEDOOR_DESKTOP: '1',
