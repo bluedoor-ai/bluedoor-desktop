@@ -121,19 +121,24 @@ function spawnPty(cols, rows) {
 
   // Don't use -l (login shell) — it sources .zprofile which resets PATH,
   // clobbering the nvm path we inject. Just use -c with our explicit PATH.
-  ptyProcess = pty.spawn('/bin/zsh', ['-c', 'exec bluedoor'], {
-    name: 'xterm-256color',
-    cols: cols || 80,
-    rows: rows || 24,
-    cwd: os.homedir(),
-    env: {
-      ...process.env,
-      PATH: fullPATH,
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      BLUEDOOR_DESKTOP: '1',
-    },
-  });
+  try {
+    ptyProcess = pty.spawn('/bin/zsh', ['-c', 'exec bluedoor'], {
+      name: 'xterm-256color',
+      cols: cols || 80,
+      rows: rows || 24,
+      cwd: os.homedir(),
+      env: {
+        ...process.env,
+        PATH: fullPATH,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        BLUEDOOR_DESKTOP: '1',
+      },
+    });
+  } catch (err) {
+    log(`PTY spawn FAILED: ${err.message}`);
+    return;
+  }
 
   ptyProcess.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
