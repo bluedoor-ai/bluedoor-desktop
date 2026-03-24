@@ -18,7 +18,7 @@ exports.default = async function notarizing(context) {
 
   const appName = context.packager.appInfo.productFilename;
 
-  console.log(`Notarizing ${appName}...`);
+  console.log(`Notarizing ${appName || 'bluedoor'}...`);
 
   await notarize({
     appBundleId: 'com.bluedoor.desktop',

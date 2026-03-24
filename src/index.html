@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bluedoor</title>
+  <title>bluedoor</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -49,22 +49,25 @@
     }
 
     #exit-overlay.visible { display: flex; }
-    #exit-overlay p { color: #666; font-size: 14px; }
 
     #exit-overlay button {
-      background: #1a1a1a;
-      color: #ccc;
+      background: transparent;
+      color: #888;
       border: 1px solid #333;
-      padding: 8px 20px;
-      border-radius: 6px;
+      padding: 10px 32px;
+      border-radius: 8px;
       cursor: pointer;
-      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      font-weight: 400;
+      letter-spacing: 0.3px;
       -webkit-app-region: no-drag;
+      transition: all 0.15s ease;
     }
 
     #exit-overlay button:hover {
-      background: #252525;
-      border-color: #444;
+      color: #ccc;
+      border-color: #555;
     }
 
     .xterm { height: 100%; }
@@ -81,8 +84,7 @@
   <div class="titlebar"></div>
   <div id="terminal-container"></div>
   <div id="exit-overlay">
-    <p>Bluedoor has exited.</p>
-    <button id="restart-btn">Restart</button>
+    <button id="restart-btn">Start</button>
   </div>
 
   <script>

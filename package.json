@@ -1,7 +1,8 @@
 {
   "name": "bluedoor-desktop",
   "version": "0.1.0",
-  "description": "Bluedoor — AI-powered investment research",
+  "description": "bluedoor — AI-powered investment research",
+  "author": "bluedoor <sam@actionbase.co>",
   "main": "src/main.js",
   "scripts": {
     "postinstall": "electron-builder install-app-deps",
@@ -15,7 +16,7 @@
   },
   "build": {
     "appId": "com.bluedoor.desktop",
-    "productName": "Bluedoor",
+    "productName": "bluedoor",
     "files": [
       "src/**/*",
       "node_modules/**/*"
