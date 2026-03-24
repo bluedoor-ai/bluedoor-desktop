@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bluedoor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: #0a0a0a;
+    }
+
+    .titlebar {
+      -webkit-app-region: drag;
+      height: 38px;
+      background: #0a0a0a;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+    }
+
+    #terminal-container {
+      position: absolute;
+      top: 38px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 4px 8px 8px 8px;
+    }
+
+    #exit-overlay {
+      display: none;
+      position: absolute;
+      top: 38px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #0a0a0a;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 5;
+    }
+
+    #exit-overlay.visible { display: flex; }
+    #exit-overlay p { color: #666; font-size: 14px; }
+
+    #exit-overlay button {
+      background: #1a1a1a;
+      color: #ccc;
+      border: 1px solid #333;
+      padding: 8px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      -webkit-app-region: no-drag;
+    }
+
+    #exit-overlay button:hover {
+      background: #252525;
+      border-color: #444;
+    }
+
+    .xterm { height: 100%; }
+
+    /* Hide xterm scrollbar — bluedoor manages its own scrolling */
+    .xterm-viewport::-webkit-scrollbar { display: none; }
+    .xterm-viewport { scrollbar-width: none; }
+
+    /* Fill any gap between terminal grid and container edge */
+    .xterm-viewport, .xterm-screen { background: #0a0a0a !important; }
+  </style>
+</head>
+<body>
+  <div class="titlebar"></div>
+  <div id="terminal-container"></div>
+  <div id="exit-overlay">
+    <p>Bluedoor has exited.</p>
+    <button id="restart-btn">Restart</button>
+  </div>
+
+  <script>
+    const { Terminal } = require('@xterm/xterm');
+    const { FitAddon } = require('@xterm/addon-fit');
+
+    // Load xterm CSS
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = require.resolve('@xterm/xterm/css/xterm.css');
+    document.head.appendChild(link);
+
+    const container = document.getElementById('terminal-container');
+    const exitOverlay = document.getElementById('exit-overlay');
+    const restartBtn = document.getElementById('restart-btn');
+
+    const term = new Terminal({
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, monospace",
+      fontSize: 16,
+      lineHeight: 1.2,
+      cursorBlink: false,
+      cursorStyle: 'bar',
+      theme: {
+        background: '#0a0a0a',
+        foreground: '#e0e0e0',
+        cursor: '#e0e0e0',
+        selectionBackground: '#264f78',
+        black: '#1a1a1a',
+        red: '#f87171',
+        green: '#4ade80',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#e0e0e0',
+        brightBlack: '#666666',
+        brightRed: '#fca5a5',
+        brightGreen: '#86efac',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#ffffff',
+      },
+      allowTransparency: false,
+      scrollback: 5000,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+    fitAddon.fit();
+
+    // Focus terminal immediately and on window activation
+    term.focus();
+    window.addEventListener('focus', () => term.focus());
+    container.addEventListener('mousedown', () => setTimeout(() => term.focus(), 0));
+
+    // Forward keystrokes to PTY
+    term.onData((data) => window.terminal.sendInput(data));
+
+    // --- Synchronized output bridge ---
+    // Ink wraps each render cycle in BSU/ESU (DEC mode 2026) markers.
+    // xterm.js v5.x doesn't support mode 2026, so it renders the intermediate
+    // "erased" state between clear and redraw, causing visible flicker.
+    // This bridge intercepts BSU/ESU and delivers each block as a single
+    // atomic term.write(), so xterm.js processes the full frame at once.
+    const BSU = '\x1b[?2026h'; // Begin Synchronized Update
+    const ESU = '\x1b[?2026l'; // End Synchronized Update
+
+    let syncBuffer = '';
+    let inSync = false;
+
+    function processData(data) {
+      let remaining = data;
+
+      while (remaining.length > 0) {
+        if (!inSync) {
+          const bsuIndex = remaining.indexOf(BSU);
+          if (bsuIndex === -1) {
+            term.write(remaining);
+            remaining = '';
+          } else {
+            if (bsuIndex > 0) {
+              term.write(remaining.substring(0, bsuIndex));
+            }
+            inSync = true;
+            syncBuffer = '';
+            remaining = remaining.substring(bsuIndex + BSU.length);
+          }
+        } else {
+          const esuIndex = remaining.indexOf(ESU);
+          if (esuIndex === -1) {
+            syncBuffer += remaining;
+            remaining = '';
+          } else {
+            syncBuffer += remaining.substring(0, esuIndex);
+            term.write(syncBuffer); // single atomic write for entire render cycle
+            syncBuffer = '';
+            inSync = false;
+            remaining = remaining.substring(esuIndex + ESU.length);
+          }
+        }
+      }
+    }
+
+    // Safety: flush if ESU never arrives (e.g. process crash mid-render)
+    setInterval(() => {
+      if (inSync && syncBuffer.length > 0) {
+        term.write(syncBuffer);
+        syncBuffer = '';
+        inSync = false;
+      }
+    }, 1000);
+
+    // Receive PTY output through the sync bridge
+    window.terminal.onData((data) => processData(data));
+
+    // Handle CLI exit
+    window.terminal.onExit((exitCode) => {
+      exitOverlay.classList.add('visible');
+    });
+
+    // Restart button
+    restartBtn.addEventListener('click', () => {
+      exitOverlay.classList.remove('visible');
+      term.clear();
+      term.reset();
+      window.terminal.restart(term.cols, term.rows);
+    });
+
+    // Resize only on actual window resize — not ResizeObserver
+    let lastCols = term.cols;
+    let lastRows = term.rows;
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        fitAddon.fit();
+        if (term.cols !== lastCols || term.rows !== lastRows) {
+          lastCols = term.cols;
+          lastRows = term.rows;
+          window.terminal.resize(term.cols, term.rows);
+        }
+      }, 100);
+    });
+
+    // Signal ready
+    window.terminal.ready(term.cols, term.rows);
+  </script>
+</body>
+</html>
