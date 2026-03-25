@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
+const { getCliEntryPoint, checkForUpdateInBackground } = require('./cli-updater');
 
 // GPU flags — must be set before app.ready
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -17,7 +18,6 @@ let ptyProcess;
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  // Also write to a log file we can read
   fs.appendFileSync(path.join(SCREENSHOT_DIR, 'bluedoor-electron.log'), line + '\n');
 }
 
@@ -80,13 +80,11 @@ async function captureScreenshot(label) {
   log(`Screenshot saved: ${filepath} (${pngBuffer.length} bytes)`);
 }
 
-function findBluedoorScript() {
-  // Find the bundled bluedoor CLI entry point
-  // In packaged app: inside app.asar or app.asar.unpacked
-  // In dev mode: in node_modules
+// --- CLI resolution ---
+
+function getBundledCliPath() {
   const candidates = [
     path.join(__dirname, '..', 'node_modules', 'bluedoor', 'dist', 'index.js'),
-    path.join(__dirname, '..', 'node_modules', '.bin', 'bluedoor'),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -94,21 +92,29 @@ function findBluedoorScript() {
   return null;
 }
 
-function spawnPty(cols, rows) {
-  // Use Electron's own Node.js to run the bundled bluedoor CLI.
-  // ELECTRON_RUN_AS_NODE=1 makes the Electron binary behave as plain Node.js.
-  // This means zero external dependencies — no Node.js, no npm, fully standalone.
-  const bluedoorScript = findBluedoorScript();
+function getAppNodeModules() {
+  return path.join(__dirname, '..', 'node_modules');
+}
 
-  if (!bluedoorScript) {
-    log('ERROR: Could not find bundled bluedoor CLI');
+function spawnPty(cols, rows) {
+  const bundledPath = getBundledCliPath();
+  const appNodeModules = getAppNodeModules();
+  const cli = getCliEntryPoint(bundledPath, appNodeModules);
+
+  if (!cli.entryPoint) {
+    log('ERROR: Could not find any bluedoor CLI');
     return;
   }
 
-  log(`Spawning bundled bluedoor: ${process.execPath} ${bluedoorScript}`);
+  log(`Spawning bluedoor v${cli.version} (${cli.source}): ${cli.entryPoint}`);
+
+  // Build NODE_PATH so the cached CLI can find native deps from the app bundle
+  const nodePath = cli.nodeModulesPath
+    ? `${cli.nodeModulesPath}${path.delimiter}${process.env.NODE_PATH || ''}`
+    : process.env.NODE_PATH || '';
 
   try {
-    ptyProcess = pty.spawn(process.execPath, [bluedoorScript], {
+    ptyProcess = pty.spawn(process.execPath, [cli.entryPoint], {
       name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
@@ -116,6 +122,7 @@ function spawnPty(cols, rows) {
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
+        NODE_PATH: nodePath,
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         BLUEDOOR_DESKTOP: '1',
@@ -138,6 +145,9 @@ function spawnPty(cols, rows) {
       mainWindow.webContents.send('terminal:exit', exitCode);
     }
   });
+
+  // Check for CLI updates in the background (downloads for next launch)
+  void checkForUpdateInBackground(cli.version, log);
 }
 
 // --- IPC handlers ---
