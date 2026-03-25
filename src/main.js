@@ -2,14 +2,61 @@ const { app, BrowserWindow, ipcMain, shell, globalShortcut } = require('electron
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const pty = require('node-pty');
-const { getCliEntryPoint, checkForUpdateInBackground } = require('./cli-updater');
+
+// --- Early crash-proof logging (writes next to the exe) ---
+const LOG_FILE = path.join(path.dirname(process.execPath), 'bluedoor-debug.log');
+function earlyLog(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  console.log(line);
+}
+
+// On Windows with Parallels/network shares, __dirname can resolve to a UNC path
+// (\\psf\Home\...) which Chromium can't load file:// URLs from. Use execPath
+// (which has a drive letter) to compute paths instead. Only override for UNC paths
+// — normal installs use __dirname which correctly resolves through ASAR.
+const SRC_DIR = __dirname.startsWith('\\\\')
+  ? path.join(path.dirname(process.execPath), 'resources', 'app', 'src')
+  : __dirname;
+
+earlyLog(`Starting bluedoor-desktop`);
+earlyLog(`  platform=${process.platform} arch=${process.arch}`);
+earlyLog(`  execPath=${process.execPath}`);
+earlyLog(`  __dirname=${__dirname}`);
+earlyLog(`  SRC_DIR=${SRC_DIR}`);
+earlyLog(`  packaged=${app.isPackaged}`);
+
+// Catch any top-level crashes
+process.on('uncaughtException', (err) => {
+  earlyLog(`UNCAUGHT EXCEPTION: ${err.stack || err.message}`);
+});
+process.on('unhandledRejection', (reason) => {
+  earlyLog(`UNHANDLED REJECTION: ${reason}`);
+});
+
+// --- Load native module (node-pty) with error handling ---
+let pty;
+try {
+  pty = require('node-pty');
+  earlyLog('node-pty loaded OK');
+} catch (err) {
+  earlyLog(`node-pty FAILED TO LOAD: ${err.stack || err.message}`);
+}
+
+let cliUpdater;
+try {
+  cliUpdater = require('./cli-updater');
+  earlyLog('cli-updater loaded OK');
+} catch (err) {
+  earlyLog(`cli-updater FAILED TO LOAD: ${err.stack || err.message}`);
+}
 
 // GPU flags — must be set before app.ready
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('disable-partial-raster');
 
 const IS_DEV = !app.isPackaged;
+const IS_MAC = process.platform === 'darwin';
 const SCREENSHOT_DIR = path.join(os.homedir(), 'Desktop');
 
 let mainWindow;
@@ -18,30 +65,42 @@ let ptyProcess;
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  fs.appendFileSync(path.join(SCREENSHOT_DIR, 'bluedoor-electron.log'), line + '\n');
+  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  try { fs.appendFileSync(path.join(SCREENSHOT_DIR, 'bluedoor-electron.log'), line + '\n'); } catch {}
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const windowOpts = {
     width: 1200,
     height: 800,
     minWidth: 700,
     minHeight: 500,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 12 },
     backgroundColor: '#0a0a0a',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(SRC_DIR, 'preload.js'),
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
     },
+  };
+
+  if (IS_MAC) {
+    windowOpts.titleBarStyle = 'hiddenInset';
+    windowOpts.trafficLightPosition = { x: 12, y: 12 };
+  }
+
+  mainWindow = new BrowserWindow(windowOpts);
+
+  const htmlPath = path.join(SRC_DIR, 'index.html');
+  log(`Loading HTML: ${htmlPath} (exists: ${fs.existsSync(htmlPath)})`);
+  mainWindow.loadFile(htmlPath).catch(e => log(`loadFile FAILED: ${e.message}`));
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    log(`Page load failed: ${errorCode} ${errorDescription}`);
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
-
   mainWindow.webContents.on('did-finish-load', () => {
-    log('Page loaded');
+    log('Page loaded successfully');
     if (IS_DEV) {
       setTimeout(() => {
         log('Taking 3s screenshot...');
@@ -54,8 +113,12 @@ function createWindow() {
     }
   });
 
-  mainWindow.webContents.on('console-message', (event) => {
-    log(`[renderer] ${event.message}`);
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log(`Renderer crashed: ${details.reason} exitCode=${details.exitCode}`);
+  });
+
+  mainWindow.webContents.on('console-message', (_event, _level, message) => {
+    log(`[renderer] ${message}`);
   });
 
   mainWindow.on('closed', () => {
@@ -84,7 +147,7 @@ async function captureScreenshot(label) {
 
 function getBundledCliPath() {
   const candidates = [
-    path.join(__dirname, '..', 'node_modules', 'bluedoor', 'dist', 'index.js'),
+    path.join(SRC_DIR, '..', 'node_modules', 'bluedoor', 'dist', 'index.js'),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -93,16 +156,31 @@ function getBundledCliPath() {
 }
 
 function getAppNodeModules() {
-  return path.join(__dirname, '..', 'node_modules');
+  return path.join(SRC_DIR, '..', 'node_modules');
 }
 
 function spawnPty(cols, rows) {
+  if (!pty) {
+    log('ERROR: node-pty not available');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:data', '\r\n\x1b[31mnode-pty failed to load — see bluedoor-debug.log\x1b[0m\r\n');
+      mainWindow.webContents.send('terminal:exit', 1);
+    }
+    return;
+  }
+
   const bundledPath = getBundledCliPath();
   const appNodeModules = getAppNodeModules();
-  const cli = getCliEntryPoint(bundledPath, appNodeModules);
+  const cli = cliUpdater
+    ? cliUpdater.getCliEntryPoint(bundledPath, appNodeModules)
+    : { entryPoint: bundledPath, version: 'unknown', source: 'bundled', nodeModulesPath: null };
 
   if (!cli.entryPoint) {
     log('ERROR: Could not find any bluedoor CLI');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:data', '\r\n\x1b[31mCould not find bluedoor CLI\x1b[0m\r\n');
+      mainWindow.webContents.send('terminal:exit', 1);
+    }
     return;
   }
 
@@ -130,6 +208,10 @@ function spawnPty(cols, rows) {
     });
   } catch (err) {
     log(`PTY spawn FAILED: ${err.message}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:data', `\r\n\x1b[31mFailed to start: ${err.message}\x1b[0m\r\n`);
+      mainWindow.webContents.send('terminal:exit', 1);
+    }
     return;
   }
 
@@ -147,7 +229,9 @@ function spawnPty(cols, rows) {
   });
 
   // Check for CLI updates in the background (downloads for next launch)
-  void checkForUpdateInBackground(cli.version, log);
+  if (cliUpdater) {
+    void cliUpdater.checkForUpdateInBackground(cli.version, log);
+  }
 }
 
 // --- IPC handlers ---
@@ -189,6 +273,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  log('All windows closed, quitting');
   if (ptyProcess) ptyProcess.kill();
   app.quit();
 });

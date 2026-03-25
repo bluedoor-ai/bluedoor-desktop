@@ -15,7 +15,7 @@
 
     .titlebar {
       -webkit-app-region: drag;
-      height: 38px;
+      height: var(--titlebar-h, 38px);
       background: #0a0a0a;
       position: fixed;
       top: 0;
@@ -24,9 +24,11 @@
       z-index: 10;
     }
 
+    .titlebar.hidden { display: none; }
+
     #terminal-container {
       position: absolute;
-      top: 38px;
+      top: var(--titlebar-h, 38px);
       left: 0;
       right: 0;
       bottom: 0;
@@ -36,7 +38,7 @@
     #exit-overlay {
       display: none;
       position: absolute;
-      top: 38px;
+      top: var(--titlebar-h, 38px);
       left: 0;
       right: 0;
       bottom: 0;
@@ -90,6 +92,14 @@
   <script>
     const { Terminal } = require('@xterm/xterm');
     const { FitAddon } = require('@xterm/addon-fit');
+
+    // Platform-aware titlebar: macOS uses custom drag region, Windows/Linux use native frame
+    const IS_MAC = window.platform === 'darwin';
+    const TITLEBAR_H = IS_MAC ? 38 : 0;
+    document.documentElement.style.setProperty('--titlebar-h', TITLEBAR_H + 'px');
+    if (!IS_MAC) {
+      document.querySelector('.titlebar').classList.add('hidden');
+    }
 
     // Load xterm CSS
     const link = document.createElement('link');
@@ -152,6 +162,10 @@
     // "erased" state between clear and redraw, causing visible flicker.
     // This bridge intercepts BSU/ESU and delivers each block as a single
     // atomic term.write(), so xterm.js processes the full frame at once.
+    //
+    // DISABLED on Windows: ConPTY can mangle or split these escape sequences
+    // across data chunks, causing the bridge to buffer output indefinitely.
+    const IS_WIN = window.platform === 'win32';
     const BSU = '\x1b[?2026h'; // Begin Synchronized Update
     const ESU = '\x1b[?2026l'; // End Synchronized Update
 
@@ -159,6 +173,12 @@
     let inSync = false;
 
     function processData(data) {
+      // On Windows, skip sync bridge — just strip the markers and write directly
+      if (IS_WIN) {
+        term.write(data.replaceAll(BSU, '').replaceAll(ESU, ''));
+        return;
+      }
+
       let remaining = data;
 
       while (remaining.length > 0) {
@@ -203,8 +223,12 @@
     // Receive PTY output through the sync bridge
     window.terminal.onData((data) => processData(data));
 
-    // Handle CLI exit
+    // Handle CLI exit — show error info before the overlay
     window.terminal.onExit((exitCode) => {
+      if (exitCode !== 0) {
+        term.writeln('');
+        term.writeln(`\x1b[31mProcess exited with code ${exitCode}\x1b[0m`);
+      }
       exitOverlay.classList.add('visible');
     });
 

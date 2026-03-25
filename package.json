@@ -17,6 +17,7 @@
   "build": {
     "appId": "com.bluedoor.desktop",
     "productName": "bluedoor",
+    "asar": false,
     "files": [
       "src/**/*",
       "node_modules/**/*"
@@ -51,7 +52,7 @@
         "nsis",
         "portable"
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.png"
     },
     "linux": {
       "target": [

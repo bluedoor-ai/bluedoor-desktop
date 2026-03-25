@@ -1,5 +1,8 @@
 const { ipcRenderer } = require('electron');
 
+// Expose platform so renderer can adjust UI (titlebar, etc.)
+window.platform = process.platform;
+
 // With contextIsolation off, we can attach directly to window
 window.terminal = {
   sendInput: (data) => ipcRenderer.send('terminal:input', data),
