@@ -1,6 +1,6 @@
 {
   "name": "bluedoor-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "bluedoor — AI-powered investment research",
   "author": "bluedoor <sam@actionbase.co>",
   "main": "src/main.js",
@@ -76,7 +76,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "bluedoor": "^0.2.5",
+    "bluedoor": "^0.2.6",
     "electron-updater": "^6.3.0",
     "node-pty": "^1.1.0"
   }
