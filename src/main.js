@@ -160,15 +160,6 @@ function getAppNodeModules() {
 }
 
 function spawnPty(cols, rows) {
-  if (!pty) {
-    log('ERROR: node-pty not available');
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('terminal:data', '\r\n\x1b[31mnode-pty failed to load — see bluedoor-debug.log\x1b[0m\r\n');
-      mainWindow.webContents.send('terminal:exit', 1);
-    }
-    return;
-  }
-
   const bundledPath = getBundledCliPath();
   const appNodeModules = getAppNodeModules();
   const cli = cliUpdater
@@ -191,6 +182,91 @@ function spawnPty(cols, rows) {
     ? `${cli.nodeModulesPath}${path.delimiter}${process.env.NODE_PATH || ''}`
     : process.env.NODE_PATH || '';
 
+  // --- Windows: use child_process.spawn with pipes (bypasses ConPTY entirely) ---
+  if (process.platform === 'win32') {
+    const { spawn: cpSpawn } = require('child_process');
+
+    const child = cpSpawn(process.execPath, [cli.entryPoint], {
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      cwd: os.homedir(),
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        NODE_PATH: nodePath,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        FORCE_COLOR: '3',
+        BLUEDOOR_DESKTOP: '1',
+        COLUMNS: String(cols || 80),
+        LINES: String(rows || 24),
+      },
+    });
+
+    // Forward stdout and stderr to renderer
+    child.stdout.on('data', (data) => {
+      const str = data.toString();
+      log(`[pty-out] ${str.substring(0, 200).replace(/[\x00-\x1f]/g, '\u00b7')}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('terminal:data', str);
+      }
+    });
+    child.stderr.on('data', (data) => {
+      const str = data.toString();
+      log(`[pty-err] ${str.substring(0, 200).replace(/[\x00-\x1f]/g, '\u00b7')}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('terminal:data', str);
+      }
+    });
+
+    child.on('exit', (code) => {
+      log(`Child exited with code ${code}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('terminal:exit', code);
+      }
+    });
+
+    child.on('error', (err) => {
+      log(`Child error: ${err.message}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('terminal:data', `\r\n\x1b[31mFailed to start: ${err.message}\x1b[0m\r\n`);
+        mainWindow.webContents.send('terminal:exit', 1);
+      }
+    });
+
+    // Store reference for input forwarding and cleanup
+    // Use a wrapper object that matches the pty interface
+    ptyProcess = {
+      write: (data) => { if (!child.killed) child.stdin.write(data); },
+      resize: (newCols, newRows) => {
+        // Send resize via IPC to child
+        if (child.connected) {
+          child.send({ type: 'resize', cols: newCols, rows: newRows });
+        }
+      },
+      kill: () => { child.kill(); },
+      pid: child.pid,
+    };
+
+    log(`[win-pipes] spawned pid=${child.pid}`);
+
+    // Check for CLI updates in the background (downloads for next launch)
+    if (cliUpdater) {
+      void cliUpdater.checkForUpdateInBackground(cli.version, log);
+    }
+
+    return; // Skip the macOS pty.spawn path below
+  }
+
+  // --- macOS / Linux: use node-pty as before ---
+  if (!pty) {
+    log('ERROR: node-pty not available');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:data', '\r\n\x1b[31mnode-pty failed to load \u2014 see bluedoor-debug.log\x1b[0m\r\n');
+      mainWindow.webContents.send('terminal:exit', 1);
+    }
+    return;
+  }
+
   try {
     ptyProcess = pty.spawn(process.execPath, [cli.entryPoint], {
       name: 'xterm-256color',
@@ -206,6 +282,8 @@ function spawnPty(cols, rows) {
         BLUEDOOR_DESKTOP: '1',
       },
     });
+
+    log(`[pty] spawned pid=${ptyProcess.pid}`);
   } catch (err) {
     log(`PTY spawn FAILED: ${err.message}`);
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -216,6 +294,7 @@ function spawnPty(cols, rows) {
   }
 
   ptyProcess.onData((data) => {
+    log(`[pty-out] ${data.substring(0, 200).replace(/[\x00-\x1f]/g, '\u00b7')}`);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal:data', data);
     }
