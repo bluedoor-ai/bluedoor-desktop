@@ -7,4 +7,10 @@ out/
 *.deb
 *.snap
 .env
+.env.*
+*.p12
+*.pem
+*.key
+*.pfx
+.npmrc
 .DS_Store
