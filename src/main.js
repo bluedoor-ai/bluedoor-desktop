@@ -203,9 +203,15 @@ function spawnPty(cols, rows) {
     });
 
     // Forward stdout and stderr to renderer
+    let frameCount = 0;
     child.stdout.on('data', (data) => {
       const str = data.toString();
-      log(`[pty-out] ${str.substring(0, 200).replace(/[\x00-\x1f]/g, '\u00b7')}`);
+      // Log first 3 frames fully (preserving \n as LF, \r as CR) for layout debugging
+      frameCount++;
+      if (frameCount <= 3) {
+        const escaped = str.replace(/\x1b/g, '\\e').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+        log(`[FRAME-${frameCount}] len=${str.length} ${escaped.substring(0, 2000)}`);
+      }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('terminal:data', str);
       }

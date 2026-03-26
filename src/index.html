@@ -117,6 +117,9 @@
       lineHeight: 1.2,
       cursorBlink: false,
       cursorStyle: 'bar',
+      // On Windows pipes mode, Ink sends \n without \r. Without a PTY to
+      // translate, xterm.js needs to convert LF to CRLF for proper layout.
+      convertEol: !IS_MAC,
       theme: {
         background: '#0a0a0a',
         foreground: '#e0e0e0',
