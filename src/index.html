@@ -15,7 +15,7 @@
 
     .titlebar {
       -webkit-app-region: drag;
-      height: var(--titlebar-h, 38px);
+      height: 38px;
       background: #0a0a0a;
       position: fixed;
       top: 0;
@@ -24,11 +24,20 @@
       z-index: 10;
     }
 
-    .titlebar.hidden { display: none; }
+    /* On Windows, titleBarOverlay renders native min/max/close on the right.
+       The drag region works automatically — no extra padding needed. */
+    .platform-linux .titlebar {
+      /* Linux has no hidden title bar support — hide the drag region */
+      display: none;
+    }
+    .platform-linux #terminal-container,
+    .platform-linux #exit-overlay {
+      top: 0;
+    }
 
     #terminal-container {
       position: absolute;
-      top: var(--titlebar-h, 38px);
+      top: 38px;
       left: 0;
       right: 0;
       bottom: 0;
@@ -38,7 +47,7 @@
     #exit-overlay {
       display: none;
       position: absolute;
-      top: var(--titlebar-h, 38px);
+      top: 38px;
       left: 0;
       right: 0;
       bottom: 0;
@@ -93,14 +102,6 @@
     const { Terminal } = require('@xterm/xterm');
     const { FitAddon } = require('@xterm/addon-fit');
 
-    // Platform-aware titlebar: macOS uses custom drag region, Windows/Linux use native frame
-    const IS_MAC = window.platform === 'darwin';
-    const TITLEBAR_H = IS_MAC ? 38 : 0;
-    document.documentElement.style.setProperty('--titlebar-h', TITLEBAR_H + 'px');
-    if (!IS_MAC) {
-      document.querySelector('.titlebar').classList.add('hidden');
-    }
-
     // Load xterm CSS
     const link = document.createElement('link');
     link.rel = 'stylesheet';
@@ -117,9 +118,6 @@
       lineHeight: 1.2,
       cursorBlink: false,
       cursorStyle: 'bar',
-      // On Windows pipes mode, Ink sends \n without \r. Without a PTY to
-      // translate, xterm.js needs to convert LF to CRLF for proper layout.
-      convertEol: !IS_MAC,
       theme: {
         background: '#0a0a0a',
         foreground: '#e0e0e0',
@@ -159,44 +157,104 @@
     // Forward keystrokes to PTY
     term.onData((data) => window.terminal.sendInput(data));
 
+    // Ctrl+V paste support
+    // Intercept at the DOM level before xterm.js sees it, to avoid double-paste.
+    term.element.addEventListener('keydown', (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'v') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        navigator.clipboard.readText().then((text) => {
+          if (text) window.terminal.sendInput(text);
+        }).catch(() => {});
+      }
+    }, true); // capture phase — fires before xterm's handler
+
+    // Mouse wheel scroll: send SGR mouse sequences directly to the PTY.
+    // The CLI enables mouse reporting and handles scroll internally via Ink.
+    // On Windows ConPTY, xterm.js mouse reporting may not work because ConPTY
+    // intercepts/drops mouse escape sequences. This handler bypasses that by
+    // converting DOM wheel events into SGR mouse sequences manually.
+    // Accumulate fractional scroll for smooth, consistent 2-line scrolling
+    let scrollAccum = 0;
+    const SCROLL_LINES = 2; // lines per scroll tick — matches macOS feel
+    const PX_PER_TICK = 80; // pixels of wheel delta per tick
+
+    container.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      scrollAccum += ev.deltaY;
+      const ticks = Math.trunc(scrollAccum / PX_PER_TICK);
+      if (ticks === 0) return;
+      scrollAccum -= ticks * PX_PER_TICK;
+
+      const button = ticks > 0 ? 65 : 64; // 65=down, 64=up
+      const count = Math.abs(ticks) * SCROLL_LINES;
+      for (let i = 0; i < count; i++) {
+        window.terminal.sendInput(`\x1b[<${button};1;1M`);
+      }
+    }, { passive: false });
+
     // --- Synchronized output bridge ---
     // Ink wraps each render cycle in BSU/ESU (DEC mode 2026) markers.
     // xterm.js v5.x doesn't support mode 2026, so it renders the intermediate
     // "erased" state between clear and redraw, causing visible flicker.
-    // This bridge intercepts BSU/ESU and delivers each block as a single
-    // atomic term.write(), so xterm.js processes the full frame at once.
     //
-    // DISABLED on Windows: ConPTY can mangle or split these escape sequences
-    // across data chunks, causing the bridge to buffer output indefinitely.
-    const IS_WIN = window.platform === 'win32';
+    // On Windows ConPTY, BSU/ESU markers pass through but the content often
+    // arrives in separate chunks AFTER the ESU. This means the "clear screen"
+    // is inside BSU/ESU (batched) but the new content arrives outside (unbatched),
+    // causing a flash of blank screen.
+    //
+    // Solution: two-layer buffering.
+    //  1. BSU/ESU bridge: strip markers, buffer content between them.
+    //  2. Frame coalescing: batch ALL writes into ~8ms frames (half a 60fps tick)
+    //     so rapid clear+redraw sequences get combined into a single render.
     const BSU = '\x1b[?2026h'; // Begin Synchronized Update
     const ESU = '\x1b[?2026l'; // End Synchronized Update
 
     let syncBuffer = '';
     let inSync = false;
 
-    function processData(data) {
-      // On Windows, skip sync bridge — just strip the markers and write directly
-      if (IS_WIN) {
-        term.write(data.replaceAll(BSU, '').replaceAll(ESU, ''));
-        return;
-      }
+    // Frame coalescing: accumulate writes and flush after a quiet period.
+    // Uses a short delay (2ms) for normal output to keep typing responsive,
+    // but extends to 50ms when a BSU render cycle is detected, since Ink's
+    // clear+redraw chunks can arrive with gaps up to ~40ms on ConPTY.
+    let pendingWrite = '';
+    let flushTimer = null;
+    let recentBSU = false; // true when we've seen a BSU recently
+    let bsuCooldown = null;
 
+    function coalescedWrite(data) {
+      pendingWrite += data;
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      const delay = recentBSU ? 50 : 2;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        if (pendingWrite.length > 0) {
+          term.write(pendingWrite);
+          pendingWrite = '';
+        }
+      }, delay);
+    }
+
+    function processData(data) {
       let remaining = data;
 
       while (remaining.length > 0) {
         if (!inSync) {
           const bsuIndex = remaining.indexOf(BSU);
           if (bsuIndex === -1) {
-            term.write(remaining);
+            coalescedWrite(remaining);
             remaining = '';
           } else {
             if (bsuIndex > 0) {
-              term.write(remaining.substring(0, bsuIndex));
+              coalescedWrite(remaining.substring(0, bsuIndex));
             }
             inSync = true;
             syncBuffer = '';
             remaining = remaining.substring(bsuIndex + BSU.length);
+            // Mark that a render cycle is active — extend coalescing window
+            recentBSU = true;
+            if (bsuCooldown) clearTimeout(bsuCooldown);
+            bsuCooldown = setTimeout(() => { recentBSU = false; }, 100);
           }
         } else {
           const esuIndex = remaining.indexOf(ESU);
@@ -205,7 +263,7 @@
             remaining = '';
           } else {
             syncBuffer += remaining.substring(0, esuIndex);
-            term.write(syncBuffer); // single atomic write for entire render cycle
+            coalescedWrite(syncBuffer); // deliver full render cycle to coalescing buffer
             syncBuffer = '';
             inSync = false;
             remaining = remaining.substring(esuIndex + ESU.length);
@@ -217,7 +275,7 @@
     // Safety: flush if ESU never arrives (e.g. process crash mid-render)
     setInterval(() => {
       if (inSync && syncBuffer.length > 0) {
-        term.write(syncBuffer);
+        coalescedWrite(syncBuffer);
         syncBuffer = '';
         inSync = false;
       }
@@ -226,12 +284,8 @@
     // Receive PTY output through the sync bridge
     window.terminal.onData((data) => processData(data));
 
-    // Handle CLI exit — show error info before the overlay
+    // Handle CLI exit
     window.terminal.onExit((exitCode) => {
-      if (exitCode !== 0) {
-        term.writeln('');
-        term.writeln(`\x1b[31mProcess exited with code ${exitCode}\x1b[0m`);
-      }
       exitOverlay.classList.add('visible');
     });
 
@@ -258,6 +312,11 @@
         }
       }, 100);
     });
+
+    // Set platform class for CSS
+    if (window.platform) {
+      document.body.classList.add(`platform-${window.platform}`);
+    }
 
     // Signal ready
     window.terminal.ready(term.cols, term.rows);

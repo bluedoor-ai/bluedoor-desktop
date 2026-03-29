@@ -5,7 +5,7 @@
   "author": "bluedoor <sam@actionbase.co>",
   "main": "src/main.js",
   "scripts": {
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "node scripts/postinstall.js",
     "start": "electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
@@ -17,10 +17,13 @@
   "build": {
     "appId": "com.bluedoor.desktop",
     "productName": "bluedoor",
-    "asar": false,
     "files": [
       "src/**/*",
       "node_modules/**/*"
+    ],
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/**"
     ],
     "mac": {
       "target": [
@@ -52,7 +55,24 @@
         "nsis",
         "portable"
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "node/",
+          "to": "node/",
+          "filter": ["node.exe"]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
     },
     "linux": {
       "target": [

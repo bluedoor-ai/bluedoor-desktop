@@ -40,13 +40,23 @@ jobs:
         with:
           node-version: '20'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
         run: npm install
+
+      - name: Bundle Node.js for Windows
+        run: node scripts/bundle-node-win.js
 
       - name: Build and publish (Windows)
         run: npm run publish:win
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Windows code signing (set these secrets to eliminate SmartScreen warning)
+          CSC_LINK: ${{ secrets.WIN_CERTIFICATE_PFX }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PASSWORD }}
 
   build-linux:
     runs-on: ubuntu-latest

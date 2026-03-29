@@ -4,6 +4,7 @@ const { ipcRenderer } = require('electron');
 window.platform = process.platform;
 
 // With contextIsolation off, we can attach directly to window
+window.platform = process.platform;
 window.terminal = {
   sendInput: (data) => ipcRenderer.send('terminal:input', data),
   ready: (cols, rows) => ipcRenderer.send('terminal:ready', { cols, rows }),
