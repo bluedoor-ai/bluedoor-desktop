@@ -2,6 +2,12 @@
 
 Electron wrapper for the bluedoor CLI. Cross-platform (macOS, Windows, Linux).
 
+## Before You Start
+
+1. `git pull origin main`
+2. `npm install` (if deps changed — triggers native module rebuild)
+3. `git log --oneline -15` to see recent work
+
 ## Tech Stack
 
 - Electron 35, vanilla JS (no framework)
@@ -42,6 +48,16 @@ npm run publish:all  # build + publish all platforms to GitHub Releases
 ## CI/CD
 
 `.github/workflows/release.yml` — Triggered by git tags (v*). Builds on macOS, Windows, Linux runners. Publishes to GitHub Releases. Node.js 20.
+
+## Environment Variables
+
+No `.env` needed for basic dev. For distribution builds:
+- `GH_TOKEN` — GitHub token for publishing releases
+- `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID` — macOS notarization (CI only)
+
+## Before Committing
+
+Run `npm start` to verify the app launches. No automated test suite — manual smoke test only.
 
 ## App Config
 
