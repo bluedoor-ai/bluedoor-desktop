@@ -41,6 +41,12 @@ A real desktop release currently has 10 steps:
 
 That is the full public ship path today. macOS now has a production-wired Electron binary auto-update path through GitHub Releases, but the website update is still part of the public distribution flow and Windows is still manual.
 
+The mac updater path has now been validated in production:
+
+1. `0.1.5` was the bootstrap release that first shipped the updater wiring
+2. `0.1.6` was detected by an installed `0.1.5` app
+3. the app downloaded `0.1.6`, restarted, installed it, and relaunched on `0.1.6`
+
 ## Files To Check Before Tagging
 
 ### In `bluedoor-desktop`
@@ -226,6 +232,11 @@ That workflow currently:
 2. builds and publishes Windows assets
 3. uploads to GitHub Releases through `electron-builder`
 
+Important:
+
+1. the overall workflow will still show `failure` if Windows fails, even when the mac build and mac assets succeed
+2. in that case, the mac release can still exist as a draft release and should be reviewed and published manually
+
 Monitor the release run:
 
 ```bash
@@ -248,6 +259,8 @@ Expected macOS assets:
 3. `bluedoor-X.Y.Z-arm64-mac.zip`
 4. `bluedoor-X.Y.Z-mac.zip`
 5. `latest-mac.yml`
+
+If the workflow is red because Windows failed, do not stop at the workflow badge. Check the release object directly. A healthy mac build can still produce a valid draft release with all mac assets and `latest-mac.yml`.
 
 Expected Windows assets, when the signing path is healthy:
 

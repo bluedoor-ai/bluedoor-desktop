@@ -24,17 +24,6 @@
       z-index: 10;
     }
 
-    /* On Windows, titleBarOverlay renders native min/max/close on the right.
-       The drag region works automatically — no extra padding needed. */
-    .platform-linux .titlebar {
-      /* Linux has no hidden title bar support — hide the drag region */
-      display: none;
-    }
-    .platform-linux #terminal-container,
-    .platform-linux #exit-overlay {
-      top: 0;
-    }
-
     #terminal-container {
       position: absolute;
       top: 38px;
@@ -175,19 +164,20 @@
     // intercepts/drops mouse escape sequences. This handler bypasses that by
     // converting DOM wheel events into SGR mouse sequences manually.
     // Accumulate fractional scroll for smooth, consistent 2-line scrolling
+    // Smooth scrolling: send 1 SGR event per small delta for fine-grained,
+    // responsive scrolling. The CLI scrolls 1 line per event.
     let scrollAccum = 0;
-    const SCROLL_LINES = 2; // lines per scroll tick — matches macOS feel
-    const PX_PER_TICK = 80; // pixels of wheel delta per tick
+    const PX_PER_LINE = 40; // pixels of wheel delta per scroll event
 
     container.addEventListener('wheel', (ev) => {
       ev.preventDefault();
       scrollAccum += ev.deltaY;
-      const ticks = Math.trunc(scrollAccum / PX_PER_TICK);
-      if (ticks === 0) return;
-      scrollAccum -= ticks * PX_PER_TICK;
+      const lines = Math.trunc(scrollAccum / PX_PER_LINE);
+      if (lines === 0) return;
+      scrollAccum -= lines * PX_PER_LINE;
 
-      const button = ticks > 0 ? 65 : 64; // 65=down, 64=up
-      const count = Math.abs(ticks) * SCROLL_LINES;
+      const button = lines > 0 ? 65 : 64; // 65=down, 64=up
+      const count = Math.abs(lines);
       for (let i = 0; i < count; i++) {
         window.terminal.sendInput(`\x1b[<${button};1;1M`);
       }
