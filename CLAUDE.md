@@ -2,6 +2,10 @@
 
 Electron wrapper for the bluedoor CLI. Cross-platform (macOS, Windows).
 
+Start with:
+
+- `docs/release.md` — end-to-end desktop release runbook across `bluedoor-desktop`, `bluedoor`, and `bluedoor-web`
+
 ## Before You Start
 
 1. `git pull origin main`
@@ -13,7 +17,7 @@ Electron wrapper for the bluedoor CLI. Cross-platform (macOS, Windows).
 - Electron 35, vanilla JS (no framework)
 - xterm.js for terminal rendering
 - node-pty for PTY spawning (macOS/Linux), child_process pipes (Windows)
-- electron-builder for packaging, electron-updater for auto-updates
+- electron-builder for packaging and GitHub Release publishing
 - Bundles the `bluedoor` npm package, with self-updating CLI mechanism
 
 ## Structure
@@ -40,7 +44,8 @@ npm run publish:all  # build + publish macOS + Windows to GitHub Releases
 
 - **Sync bridge**: Buffers output between DEC mode 2026 markers (BSU/ESU) for flicker-free rendering. Disabled on Windows (ConPTY mangles sequences).
 - **Platform differences**: macOS gets custom titlebar with traffic lights; Windows uses native titlebar. macOS uses node-pty; Windows uses pipes.
-- **CLI updates**: On launch, checks npm for newer `bluedoor` versions. Downloads tarball to `~/.bluedoor/cli-cache/{version}/`. Uses `NODE_PATH` for native deps.
+- **CLI updates**: On launch, checks npm for newer `bluedoor` versions. Downloads tarball to `~/.bluedoor/cli-cache/{version}/` and hydrates a local `node_modules` tree beside the cached CLI before use.
+- **Binary auto-update**: macOS packaged builds now check GitHub Releases for newer desktop versions via `electron-updater`. Windows binary auto-update is not wired yet.
 - **Logging**: Dual output to console + `~/Desktop/bluedoor-electron.log`. Early crash logging before app.ready.
 - **macOS signing**: Hardened runtime + notarization via `scripts/notarize.js`.
 

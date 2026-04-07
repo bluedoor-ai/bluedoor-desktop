@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, shell, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, globalShortcut, dialog } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
+const { autoUpdater } = require('electron-updater');
 const { getCliEntryPoint, checkForUpdateInBackground, invalidateCachedVersion } = require('./cli-updater');
 
 // GPU flags — must be set before app.ready
@@ -18,12 +19,16 @@ if (!gotTheLock) {
 }
 
 const IS_DEV = !app.isPackaged;
+const MAC_BINARY_AUTO_UPDATE_ENABLED = app.isPackaged && process.platform === 'darwin';
 const LOG_DIR = path.join(os.homedir(), '.bluedoor');
 const LOG_FILE = path.join(LOG_DIR, 'desktop.log');
 
 let mainWindow;
 let ptyProcess;
 let launchAttemptId = 0;
+let binaryUpdateCheckStarted = false;
+let binaryUpdatePromptVisible = false;
+let lastLoggedDownloadBucket = -1;
 
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -105,6 +110,127 @@ function killPty() {
     try { ptyProcess.kill(); } catch {}
     ptyProcess = null;
   }
+}
+
+async function showUpdateDialog(options) {
+  if (binaryUpdatePromptVisible) {
+    log(`Skipping update dialog while another prompt is visible: ${options.title}`);
+    return { response: 1 };
+  }
+
+  binaryUpdatePromptVisible = true;
+  try {
+    return await dialog.showMessageBox(mainWindow || undefined, options);
+  } finally {
+    binaryUpdatePromptVisible = false;
+  }
+}
+
+function setupBinaryAutoUpdater() {
+  if (!MAC_BINARY_AUTO_UPDATE_ENABLED) {
+    log(`Binary auto-update disabled (packaged=${app.isPackaged}, platform=${process.platform})`);
+    return;
+  }
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    log(`Binary updater: checking for updates (app v${app.getVersion()})`);
+  });
+
+  autoUpdater.on('update-available', async (info) => {
+    log(`Binary updater: update available ${app.getVersion()} -> ${info.version}`);
+
+    const result = await showUpdateDialog({
+      type: 'info',
+      buttons: ['Download Update', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update Available',
+      message: `bluedoor ${info.version} is available.`,
+      detail: 'Download the new desktop build now and install it after the app closes.',
+    });
+
+    if (result.response !== 0) {
+      log(`Binary updater: user deferred download for v${info.version}`);
+      return;
+    }
+
+    try {
+      log(`Binary updater: downloading v${info.version}`);
+      lastLoggedDownloadBucket = -1;
+      await autoUpdater.downloadUpdate();
+    } catch (error) {
+      log(`Binary updater: download failed for v${info.version}: ${error.message}`);
+      await showUpdateDialog({
+        type: 'error',
+        buttons: ['OK'],
+        defaultId: 0,
+        title: 'Update Download Failed',
+        message: `Failed to download bluedoor ${info.version}.`,
+        detail: error.message,
+      });
+    }
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    log(`Binary updater: no update available (current=${app.getVersion()}, latest=${info?.version || 'unknown'})`);
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const bucket = Math.floor(progress.percent / 10);
+    if (bucket <= lastLoggedDownloadBucket) return;
+    lastLoggedDownloadBucket = bucket;
+    log(`Binary updater: download ${Math.round(progress.percent)}% (${Math.round(progress.bytesPerSecond)} B/s)`);
+  });
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    log(`Binary updater: update downloaded v${info.version}`);
+
+    const result = await showUpdateDialog({
+      type: 'info',
+      buttons: ['Restart and Install', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update Ready',
+      message: `bluedoor ${info.version} is ready to install.`,
+      detail: 'Restart now to apply the desktop update. If you wait, it will install after you quit the app.',
+    });
+
+    if (result.response !== 0) {
+      log(`Binary updater: user deferred install for v${info.version}`);
+      return;
+    }
+
+    log(`Binary updater: restarting to install v${info.version}`);
+    setImmediate(() => {
+      autoUpdater.quitAndInstall(false, true);
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    log(`Binary updater: ${error?.message || String(error)}`);
+  });
+}
+
+function checkForBinaryUpdateInBackground() {
+  if (!MAC_BINARY_AUTO_UPDATE_ENABLED) {
+    return;
+  }
+
+  if (binaryUpdateCheckStarted) {
+    log('Binary updater: check already started for this launch');
+    return;
+  }
+
+  binaryUpdateCheckStarted = true;
+  setTimeout(() => {
+    log('Binary updater: starting background check');
+    autoUpdater.checkForUpdates().catch((error) => {
+      log(`Binary updater: check failed: ${error.message}`);
+    });
+  }, 10000);
 }
 
 // --- Node.js resolution (Windows) ---
@@ -329,7 +455,9 @@ app.on('second-instance', () => {
 
 app.whenReady().then(() => {
   log('App ready, creating window');
+  setupBinaryAutoUpdater();
   createWindow();
+  checkForBinaryUpdateInBackground();
 
   if (IS_DEV) {
     globalShortcut.register('F5', () => {
