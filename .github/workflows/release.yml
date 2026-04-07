@@ -103,20 +103,3 @@ jobs:
           name: esigner-cka-logs
           path: C:\Users\runneradmin\AppData\Roaming\eSignerCKA\KSP
           if-no-files-found: ignore
-
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build and publish (Linux)
-        run: npm run dist:linux
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}

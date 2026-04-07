@@ -66,14 +66,6 @@ module.exports = {
     uninstallerIcon: 'assets/icon.ico',
     installerHeaderIcon: 'assets/icon.ico'
   },
-  linux: {
-    target: [
-      'AppImage',
-      'deb'
-    ],
-    category: 'Finance',
-    icon: 'assets/icon.png'
-  },
   publish: {
     provider: 'github',
     owner: 'bluedoor-ai',

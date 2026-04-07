@@ -1,6 +1,6 @@
 # Bluedoor Desktop
 
-Electron wrapper for the bluedoor CLI. Cross-platform (macOS, Windows, Linux).
+Electron wrapper for the bluedoor CLI. Cross-platform (macOS, Windows).
 
 ## Before You Start
 
@@ -33,27 +33,27 @@ npm install          # also runs electron-builder install-app-deps
 npm start            # launch dev mode (electron .)
 npm run dist:mac     # build macOS (.dmg + .zip, arm64 + x64)
 npm run dist:win     # build Windows (.exe + portable)
-npm run dist:linux   # build Linux (.AppImage + .deb)
-npm run publish:all  # build + publish all platforms to GitHub Releases
+npm run publish:all  # build + publish macOS + Windows to GitHub Releases
 ```
 
 ## Key Patterns
 
 - **Sync bridge**: Buffers output between DEC mode 2026 markers (BSU/ESU) for flicker-free rendering. Disabled on Windows (ConPTY mangles sequences).
-- **Platform differences**: macOS gets custom titlebar with traffic lights; Windows/Linux use native titlebar. macOS/Linux use node-pty; Windows uses pipes.
+- **Platform differences**: macOS gets custom titlebar with traffic lights; Windows uses native titlebar. macOS uses node-pty; Windows uses pipes.
 - **CLI updates**: On launch, checks npm for newer `bluedoor` versions. Downloads tarball to `~/.bluedoor/cli-cache/{version}/`. Uses `NODE_PATH` for native deps.
 - **Logging**: Dual output to console + `~/Desktop/bluedoor-electron.log`. Early crash logging before app.ready.
 - **macOS signing**: Hardened runtime + notarization via `scripts/notarize.js`.
 
 ## CI/CD
 
-`.github/workflows/release.yml` — Triggered by git tags (v*). Builds on macOS, Windows, Linux runners. Publishes to GitHub Releases. Node.js 20.
+`.github/workflows/release.yml` — Triggered by git tags (v*). Builds on macOS and Windows runners. Publishes to GitHub Releases. Node.js 20.
 
 ## Environment Variables
 
 No `.env` needed for basic dev. For distribution builds:
 - `GH_TOKEN` — GitHub token for publishing releases
 - `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID` — macOS notarization (CI only)
+- `SSL_COM_MODE`, `SSL_COM_USERNAME`, `SSL_COM_PASSWORD`, `SSL_COM_TOTP_SECRET` — Windows code signing via SSL.com eSigner CKA (CI only)
 
 ## Before Committing
 

@@ -9,10 +9,9 @@
     "start": "electron .",
     "dist:mac": "electron-builder --config electron-builder.config.js --mac",
     "dist:win": "electron-builder --config electron-builder.config.js --win",
-    "dist:linux": "electron-builder --config electron-builder.config.js --linux",
     "publish:mac": "electron-builder --config electron-builder.config.js --mac -p always",
     "publish:win": "electron-builder --config electron-builder.config.js --win -p always",
-    "publish:all": "electron-builder --config electron-builder.config.js -mwl -p always"
+    "publish:all": "electron-builder --config electron-builder.config.js -mw -p always"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
