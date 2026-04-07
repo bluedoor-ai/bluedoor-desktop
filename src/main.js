@@ -3,7 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
-const { getCliEntryPoint, checkForUpdateInBackground } = require('./cli-updater');
+const { getCliEntryPoint, checkForUpdateInBackground, invalidateCachedVersion } = require('./cli-updater');
 
 // GPU flags — must be set before app.ready
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -23,6 +23,7 @@ const LOG_FILE = path.join(LOG_DIR, 'desktop.log');
 
 let mainWindow;
 let ptyProcess;
+let launchAttemptId = 0;
 
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -179,6 +180,8 @@ function spawnPty(cols, rows) {
   }
 
   log(`Spawning bluedoor v${cli.version} (${cli.source}): ${cli.entryPoint}`);
+  const startedAt = Date.now();
+  const attemptId = ++launchAttemptId;
 
   // Build NODE_PATH so the cached CLI can find native deps from the app bundle
   const nodePath = cli.nodeModulesPath
@@ -212,7 +215,20 @@ function spawnPty(cols, rows) {
   // Instead, use the system Node.js. On macOS/Linux, the Electron node
   // runtime works fine with PTY.
   let spawnFile, spawnArgs;
-  if (isWin) {
+
+  // Dev mode: use system Node.js to avoid Electron ABI mismatch with
+  // native modules (better-sqlite3, etc.) compiled for system Node.
+  if (cli.source === 'dev') {
+    const { execSync } = require('child_process');
+    try {
+      spawnFile = execSync('which node', { encoding: 'utf-8' }).trim();
+    } catch {
+      spawnFile = 'node';
+    }
+    spawnArgs = [cli.entryPoint];
+    delete ptyOpts.env.ELECTRON_RUN_AS_NODE;
+    log(`Dev mode: using system Node.js: ${spawnFile}`);
+  } else if (isWin) {
     const nodeExe = findNodeExe();
     if (nodeExe) {
       spawnFile = nodeExe;
@@ -255,6 +271,21 @@ function spawnPty(cols, rows) {
   ptyProcess.onExit(({ exitCode }) => {
     log(`PTY exited with code ${exitCode}`);
     ptyProcess = null;
+
+    const runtimeMs = Date.now() - startedAt;
+    const shouldFallbackToBundled =
+      attemptId === launchAttemptId &&
+      cli.source === 'cached' &&
+      exitCode !== 0 &&
+      runtimeMs < 15000;
+
+    if (shouldFallbackToBundled) {
+      log(`Cached CLI v${cli.version} exited after ${runtimeMs}ms; invalidating cache and retrying bundled CLI`);
+      invalidateCachedVersion(cli.version, log);
+      spawnPty(cols, rows);
+      return;
+    }
+
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal:exit', exitCode);
     }

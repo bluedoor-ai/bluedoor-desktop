@@ -3,9 +3,9 @@
  *
  * The Electron app bundles a CLI version as a fallback, but on each launch
  * checks npm for a newer version. If found, it downloads the tarball and
- * extracts it to ~/.bluedoor/cli-cache/{version}/. On the next launch,
- * the cached version is used with NODE_PATH pointing to the app's
- * node_modules for native dependencies (better-sqlite3, sharp, etc.).
+ * extracts it to ~/.bluedoor/cli-cache/{version}/. Before a cached version
+ * is used, the app hydrates a local node_modules tree beside it from the
+ * bundled app dependencies so ESM bare imports resolve correctly.
  *
  * This means CLI updates are automatic — no Electron rebuild needed.
  */
@@ -19,6 +19,7 @@ const tar = require('tar');
 const CLI_CACHE_DIR = path.join(os.homedir(), '.bluedoor', 'cli-cache');
 const STATE_FILE = path.join(CLI_CACHE_DIR, 'state.json');
 const NPM_REGISTRY = 'https://registry.npmjs.org/bluedoor';
+const CACHE_READY_MARKER = '.bluedoor-cache-ready';
 
 function readState() {
   try {
@@ -33,16 +34,111 @@ function writeState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+function copyRecursive(src, dest) {
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src)) {
+      copyRecursive(path.join(src, entry), path.join(dest, entry));
+    }
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+}
+
+function getBundledNodeModuleRoots() {
+  const roots = [];
+  const packagedNodeModules = path.join(__dirname, '..', 'node_modules');
+  if (fs.existsSync(packagedNodeModules)) {
+    roots.push({ path: packagedNodeModules, overwrite: false });
+  }
+
+  const unpacked = __dirname.replace('app.asar', 'app.asar.unpacked');
+  const unpackedNodeModules = path.join(unpacked, '..', 'node_modules');
+  if (unpacked !== __dirname && fs.existsSync(unpackedNodeModules)) {
+    roots.push({ path: unpackedNodeModules, overwrite: true });
+  }
+
+  return roots;
+}
+
+function hydrateCachedNodeModules(versionDir, log = () => {}) {
+  const destRoot = path.join(versionDir, 'node_modules');
+  const markerPath = path.join(destRoot, CACHE_READY_MARKER);
+  if (fs.existsSync(markerPath)) {
+    return true;
+  }
+
+  const roots = getBundledNodeModuleRoots();
+  if (roots.length === 0) {
+    throw new Error('No bundled node_modules roots found');
+  }
+
+  log(`Hydrating cached CLI dependencies for ${versionDir}...`);
+  fs.mkdirSync(destRoot, { recursive: true });
+
+  for (const root of roots) {
+    for (const entry of fs.readdirSync(root.path)) {
+      if (entry === '.bin') continue;
+      const src = path.join(root.path, entry);
+      const dest = path.join(destRoot, entry);
+      if (!root.overwrite && fs.existsSync(dest)) continue;
+      if (root.overwrite) {
+        fs.rmSync(dest, { recursive: true, force: true });
+      }
+      copyRecursive(src, dest);
+    }
+  }
+
+  fs.writeFileSync(markerPath, JSON.stringify({
+    hydratedAt: new Date().toISOString(),
+  }, null, 2));
+  log('Cached CLI dependencies ready');
+  return true;
+}
+
 /**
  * Returns the path to the best available CLI entry point.
- * Prefers cached (latest) version over bundled.
+ * Prefers: dev override → cached (latest) → bundled.
+ *
+ * Set BLUEDOOR_DEV_CLI to a path (e.g. ../bluedoor/packages/cli/dist/index.js)
+ * to use a local dev build instead of the npm package.
  */
 function getCliEntryPoint(bundledPath, appNodeModules) {
+  // Dev override: point at local CLI build
+  const devCli = process.env.BLUEDOOR_DEV_CLI;
+  if (devCli) {
+    const devPath = path.resolve(devCli);
+    if (fs.existsSync(devPath)) {
+      return {
+        entryPoint: devPath,
+        version: 'dev',
+        source: 'dev',
+        nodeModulesPath: path.resolve(path.dirname(devPath), '..', '..', '..', 'node_modules'),
+      };
+    }
+    console.warn(`BLUEDOOR_DEV_CLI path not found: ${devPath}, falling back to normal resolution`);
+  }
+
   const state = readState();
 
   if (state.currentVersion && state.currentPath) {
     const entryPoint = path.join(state.currentPath, 'dist', 'index.js');
     if (fs.existsSync(entryPoint)) {
+      try {
+        hydrateCachedNodeModules(state.currentPath);
+      } catch (error) {
+        console.warn(`Cached CLI hydration failed for v${state.currentVersion}: ${error.message}`);
+        try { invalidateCachedVersion(state.currentVersion, console.warn); } catch {}
+        return {
+          entryPoint: bundledPath,
+          version: getBundledVersion(bundledPath),
+          source: 'bundled',
+          nodeModulesPath: null,
+        };
+      }
       return {
         entryPoint,
         version: state.currentVersion,
@@ -108,6 +204,13 @@ async function downloadVersion(version, tarballUrl, log) {
   // Already downloaded
   if (fs.existsSync(path.join(versionDir, 'dist', 'index.js'))) {
     log(`CLI v${version} already cached`);
+    try {
+      hydrateCachedNodeModules(versionDir, log);
+    } catch (error) {
+      log(`Dependency hydration failed: ${error.message}`);
+      try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch {}
+      return false;
+    }
     writeState({ currentVersion: version, currentPath: versionDir });
     return true;
   }
@@ -138,6 +241,14 @@ async function downloadVersion(version, tarballUrl, log) {
             strip: 1, // strip 'package/' prefix
           }))
           .on('finish', () => {
+            try {
+              hydrateCachedNodeModules(versionDir, log);
+            } catch (err) {
+              log(`Dependency hydration failed: ${err.message}`);
+              try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch {}
+              resolve(false);
+              return;
+            }
             log(`CLI v${version} downloaded and extracted`);
             writeState({ currentVersion: version, currentPath: versionDir });
 
@@ -183,6 +294,20 @@ function cleanOldVersions(currentVersion, log) {
   } catch {}
 }
 
+function invalidateCachedVersion(version, log = () => {}) {
+  const state = readState();
+  const versionDir = path.join(CLI_CACHE_DIR, version);
+  if (state.currentVersion === version) {
+    writeState({});
+  }
+  try {
+    fs.rmSync(versionDir, { recursive: true, force: true });
+    log(`Invalidated cached CLI v${version}`);
+  } catch (error) {
+    log(`Failed to invalidate cached CLI v${version}: ${error.message}`);
+  }
+}
+
 /**
  * Background update check. Non-blocking, fire-and-forget.
  * Downloads the new version for next launch.
@@ -217,4 +342,5 @@ module.exports = {
   getCliEntryPoint,
   checkForUpdateInBackground,
   getBundledVersion,
+  invalidateCachedVersion,
 };
